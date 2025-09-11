@@ -24,7 +24,11 @@ def choose_behavior(state: AgentState) -> str:
     Decide whether to fetch data from database, update database or do simple chat.
     """
     structured_llm = llm.with_structured_output(Behavior)
-    behavior = structured_llm.invoke(state["messages"][-1:])
+    messages = [
+        SystemMessage("根据以下用户消息，决定接下来的行为："),
+        state["messages"][-1],
+    ]
+    behavior = structured_llm.invoke(messages)
     return behavior["key"]
 
 def fetch_db_node(state: AgentState) -> AgentState:
