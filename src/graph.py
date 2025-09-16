@@ -1,4 +1,6 @@
 from typing import TypedDict, Annotated
+
+from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
@@ -8,7 +10,7 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.store.postgres import PostgresStore
 from langchain_huggingface import HuggingFaceEmbeddings
 import datetime
-from src.agent import AgentState, llm
+from src.agent import AgentState, llm, last_human_message
 from src.database import DBManager, Record, db_creation_script
 import uuid
 
@@ -24,6 +26,8 @@ class Behavior(TypedDict):
         'chat': 用户的话与消费无关，应进行简单的回复
         """
     ]
+
+# ----------------- graph nodes -------------------
 
 def choose_behavior(state: AgentState) -> str:
     """
@@ -118,7 +122,13 @@ def chat_node(state: AgentState) -> AgentState:
     """
     Node to handle simple chat.
     """
-    response = llm.invoke(state["messages"])
+    trimmed_messages = trim_messages(
+        state["messages"],
+        strategy="last",
+        token_counter=count_tokens_approximately,
+        max_tokens=1024,
+    )
+    response = llm.invoke(trimmed_messages)
     return {"messages": [AIMessage(response.content)]}
 
 def comment_node(state: AgentState) -> AgentState:
@@ -126,7 +136,13 @@ def comment_node(state: AgentState) -> AgentState:
     Node to comment on the consumption record.
     """
     prompt = "若查询到了消费记录，结合相关记忆进行简短的评论；若更新了消费记录，向用户展示消费记录的内容并简短评论。"
-    response = llm.invoke(state["messages"] + [SystemMessage(prompt)])
+    trimmed_messages = trim_messages(
+        state["messages"],
+        strategy="last",
+        token_counter=count_tokens_approximately,
+        max_tokens=1024,
+    )
+    response = llm.invoke(trimmed_messages + [SystemMessage(prompt)])
     return {"messages": [AIMessage(response.content)]}
 
 graph = StateGraph(AgentState)
@@ -150,20 +166,25 @@ graph.add_edge("chat", END)
 
 db = DBManager()
 
+#----------------- app run utilities -------------------
+
+# huggingface embeddings model
+model_name = "sentence-transformers/all-mpnet-base-v2"
+model_kwargs = {'device': 'cpu'}
+encode_kwargs = {'normalize_embeddings': False}
+hf = HuggingFaceEmbeddings(
+    model_name=model_name,
+    model_kwargs=model_kwargs,
+    encode_kwargs=encode_kwargs
+)
+
 def print_stream(stream):
     for event in stream:
         event["messages"][-1].pretty_print()
 
-def run_postgres_graph(user_input: str, config: RunnableConfig, ):
+def run_postgres_graph(default_user_input: str, config: RunnableConfig, ):
     checkpointer = InMemorySaver()
-    model_name = "sentence-transformers/all-mpnet-base-v2"
-    model_kwargs = {'device': 'cpu'}
-    encode_kwargs = {'normalize_embeddings': False}
-    hf = HuggingFaceEmbeddings(
-        model_name=model_name,
-        model_kwargs=model_kwargs,
-        encode_kwargs=encode_kwargs
-    )
+
     conn_string = "postgresql://postgres:123456@localhost:5432/postgres?sslmode=disable"
     with PostgresStore.from_conn_string(
             conn_string,
@@ -177,6 +198,8 @@ def run_postgres_graph(user_input: str, config: RunnableConfig, ):
             checkpointer=checkpointer,
             store=store,
         )
+
+        user_input = default_user_input
         while user_input.lower() not in ["exit", "quit"]:
             print_stream(app.stream(
                 {"messages": [HumanMessage(user_input)]},
@@ -190,14 +213,6 @@ def run_postgres_graph(user_input: str, config: RunnableConfig, ):
 
 def run_inmemory_graph(user_input: str, config: RunnableConfig, ):
     checkpointer = InMemorySaver()
-    model_name = "sentence-transformers/all-mpnet-base-v2"
-    model_kwargs = {'device': 'cpu'}
-    encode_kwargs = {'normalize_embeddings': False}
-    hf = HuggingFaceEmbeddings(
-        model_name=model_name,
-        model_kwargs=model_kwargs,
-        encode_kwargs=encode_kwargs
-    )
     store = InMemoryStore(
         index={
             "dims": 768,
