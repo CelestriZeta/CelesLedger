@@ -9,6 +9,7 @@ def main():
     # run_postgres_graph(user_input, config)
     run_inmemory_graph(user_input, config)
 
+
 if __name__ == "__main__":
     # db.clear()
     main()
