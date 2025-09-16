@@ -75,4 +75,3 @@ class DBManager:
     def close(self):
         self.conn.close()
 
-db = DBManager()

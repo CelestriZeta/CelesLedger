@@ -1,24 +1,18 @@
 from typing import TypedDict, Annotated
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langgraph.store.base import BaseStore
+from langgraph.store.memory import InMemoryStore
+from langgraph.store.postgres import PostgresStore
+from langchain_huggingface import HuggingFaceEmbeddings
 import datetime
 from src.agent import AgentState, llm
-from src.database import db, Record, db_creation_script
+from src.database import DBManager, Record, db_creation_script
+import uuid
 
 current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-checkpointer = InMemorySaver()
-"""
-store = InMemoryStore(
-    index={
-        "embed": init_embeddings("openai:text-embedding-3-small"),  # Embedding provider
-        "dims": 1536,                              # Embedding dimensions
-        "fields": ["message"]              # Fields to embed
-    }
-)
-"""
 
 class Behavior(TypedDict):
     key: Annotated[
@@ -43,7 +37,7 @@ def choose_behavior(state: AgentState) -> str:
     behavior = structured_llm.invoke(messages)
     return behavior["key"]
 
-def fetch_db_node(state: AgentState) -> AgentState:
+def fetch_db_node(state: AgentState, config: RunnableConfig, *, store: BaseStore) -> AgentState:
     """
     Node to fetch data from the database.
     """
@@ -78,14 +72,24 @@ f"""
 - 确保SQL语法标准且可在SQLite中执行
 """
     ),])
-    print(query.content)
     try:
         fetched_record = db.execute(query.content)
     except Exception as e:
         print(f"执行SQL查询时出错: {e}")
-    return {"messages": [SystemMessage("SystemMessage: 用户可能希望了解的消费记录：" + str(fetched_record))]}
 
-def update_db_node(state: AgentState) -> AgentState:
+    # search in memory store
+    namespace = (config["configurable"]["user_id"], "memories")
+    memories = store.search(
+        namespace,
+        query=f"与{state["messages"][-1].content}相关的记忆",
+        limit=3
+    )
+
+    return {"messages": [SystemMessage(
+        "SystemMessage: 查询到的消费记录：" + str(fetched_record) + "；相关记忆：" + str(memories)
+    )]}
+
+def update_db_node(state: AgentState, config: RunnableConfig, *, store: BaseStore) -> AgentState:
     """
     Node to update the database with new consumption information.
     """
@@ -102,6 +106,12 @@ def update_db_node(state: AgentState) -> AgentState:
         if k not in record:
             record[k] = None
     db.add_record(record)
+
+    # update memory store
+    message_id = str(uuid.uuid4())
+    namespace = (config["configurable"]["user_id"], "memories")
+    store.put(namespace, message_id, record)
+
     return {"messages": [SystemMessage("SystemMessage: 消费记录已加入数据库：" + str(record))]}
 
 def chat_node(state: AgentState) -> AgentState:
@@ -109,14 +119,13 @@ def chat_node(state: AgentState) -> AgentState:
     Node to handle simple chat.
     """
     response = llm.invoke(state["messages"])
-    # response.pretty_print()
     return {"messages": [AIMessage(response.content)]}
 
 def comment_node(state: AgentState) -> AgentState:
     """
     Node to comment on the consumption record.
     """
-    prompt = "请对上一次查询到的或记录的消费记录进行简短的评论。"
+    prompt = "若查询到了消费记录，结合相关记忆进行简短的评论；若更新了消费记录，向用户展示消费记录的内容并简短评论。"
     response = llm.invoke(state["messages"] + [SystemMessage(prompt)])
     return {"messages": [AIMessage(response.content)]}
 
@@ -139,6 +148,73 @@ graph.add_edge("update_db", "comment")
 graph.add_edge("comment", END)
 graph.add_edge("chat", END)
 
-app = graph.compile(
-    checkpointer=checkpointer,
-)
+db = DBManager()
+
+def print_stream(stream):
+    for event in stream:
+        event["messages"][-1].pretty_print()
+
+def run_postgres_graph(user_input: str, config: RunnableConfig, ):
+    checkpointer = InMemorySaver()
+    model_name = "sentence-transformers/all-mpnet-base-v2"
+    model_kwargs = {'device': 'cpu'}
+    encode_kwargs = {'normalize_embeddings': False}
+    hf = HuggingFaceEmbeddings(
+        model_name=model_name,
+        model_kwargs=model_kwargs,
+        encode_kwargs=encode_kwargs
+    )
+    conn_string = "postgresql://postgres:123456@localhost:5432/postgres?sslmode=disable"
+    with PostgresStore.from_conn_string(
+            conn_string,
+            index={
+                "dims": 768,
+                "embed": hf,
+            }
+    ) as store:
+        store.setup()
+        app = graph.compile(
+            checkpointer=checkpointer,
+            store=store,
+        )
+        while user_input.lower() not in ["exit", "quit"]:
+            print_stream(app.stream(
+                {"messages": [HumanMessage(user_input)]},
+                config=config,
+                stream_mode="values"
+            ))
+            user_input = input("Input: ")
+
+    print("Exiting...")
+    db.close()
+
+def run_inmemory_graph(user_input: str, config: RunnableConfig, ):
+    checkpointer = InMemorySaver()
+    model_name = "sentence-transformers/all-mpnet-base-v2"
+    model_kwargs = {'device': 'cpu'}
+    encode_kwargs = {'normalize_embeddings': False}
+    hf = HuggingFaceEmbeddings(
+        model_name=model_name,
+        model_kwargs=model_kwargs,
+        encode_kwargs=encode_kwargs
+    )
+    store = InMemoryStore(
+        index={
+            "dims": 768,
+            "embed": hf,
+        }
+    )
+    app = graph.compile(
+        checkpointer=checkpointer,
+        store=store,
+    )
+    while user_input.lower() not in ["exit", "quit"]:
+        print_stream(app.stream(
+            {"messages": [HumanMessage(user_input)]},
+            config=config,
+            stream_mode="values"
+        ))
+        user_input = input("Input: ")
+
+    print("Exiting...")
+    db.close()
