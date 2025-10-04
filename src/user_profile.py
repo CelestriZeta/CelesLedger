@@ -10,7 +10,6 @@ class UserProfile(BaseModel):
     language: Optional[str] = None
     timezone: Optional[str] = None
 
-
 # Configure extraction
 manager = create_memory_manager(
     llm,

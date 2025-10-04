@@ -135,12 +135,16 @@ def comment_node(state: AgentState) -> AgentState:
     """
     Node to comment on the consumption record.
     """
-    prompt = "若查询到了消费记录，结合相关记忆进行简短的评论；若更新了消费记录，向用户展示消费记录的内容并简短评论。"
+    prompt = """
+    - 若查询到了消费记录，结合相关记忆进行简短的评论。
+    - 若更新了消费记录，向用户展示消费记录的内容并简短评论。
+    注意：所有评论需使用自然语言，语气应亲切友好。
+    """
     trimmed_messages = trim_messages(
         state["messages"],
         strategy="last",
         token_counter=count_tokens_approximately,
-        max_tokens=1024,
+        max_tokens=2048,
     )
     response = llm.invoke(trimmed_messages + [SystemMessage(prompt)])
     return {"messages": [AIMessage(response.content)]}
@@ -233,3 +237,21 @@ def run_inmemory_graph(user_input: str, config: RunnableConfig, ):
 
     print("Exiting...")
     db.close()
+
+# ----------------- streamlit run utilities -------------------
+
+STREAMLIT = True
+if STREAMLIT:
+    config = {"configurable": {"thread_id": "1", "user_id": "1"}}
+
+    checkpointer = InMemorySaver()
+    store = InMemoryStore(
+        index={
+            "dims": 768,
+            "embed": hf,
+        }
+    )
+    app = graph.compile(
+        checkpointer=checkpointer,
+        store=store,
+    )

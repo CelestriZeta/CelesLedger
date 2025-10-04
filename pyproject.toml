@@ -15,8 +15,10 @@ dependencies = [
     "langgraph[postgres]>=0.6.6",
     "langmem>=0.0.29",
     "mysql-connector-python>=9.4.0",
+    "pandas>=2.3.2",
     "psycopg>=3.2.10",
     "psycopg-binary>=3.2.10",
     "sentence-transformers>=5.1.0",
     "sqlalchemy>=2.0.43",
+    "streamlit>=1.49.1",
 ]

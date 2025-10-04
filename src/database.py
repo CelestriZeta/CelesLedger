@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from typing import TypedDict, Annotated, Sequence
 
 class Record(TypedDict):
@@ -36,7 +37,8 @@ CREATE TABLE IF NOT EXISTS consumption_records
 
 class DBManager:
     def __init__(self, db_name="consumption_records.db"):
-        self.conn = sqlite3.connect(db_name)
+        self.conn = sqlite3.connect(db_name, check_same_thread=False)
+        self.lock = threading.Lock()
         self.create_table()
 
     def create_table(self):

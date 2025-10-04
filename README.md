@@ -14,4 +14,4 @@ It interprets and saves expenditure records; Provides highly customized response
 2. Enter your API key in .env file, exemplified in .env.example. 
 - This project uses Deepseek as the LLM provider, you can change to other models by modifying the `llm` initialization arguments in /src/agent.py.
 
-3. run `python /src/main.py` to start the app.
+3. run `streamlit run .\src\main.py` to start the app.
